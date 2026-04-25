@@ -1,0 +1,165 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import pandas as pd
+import streamlit as st
+
+from src.agents.exposure_action_agent import PERSONAS, generate_exposure_actions
+from src.agents.grid_signal_agent import detect_grid_signals
+from src.agents.price_impact_agent import detect_price_signals
+from src.agents.reasoning_agent import reason_about_market
+from src.data.cache import load_last_success
+from src.data.ercot_client import SETTLEMENT_POINTS, ErcotClient, ErcotDataError, bundle_to_dict
+from src.utils.plotting import load_chart, price_chart, renewable_chart
+from src.utils.schemas import DISCLAIMER
+from src.utils.time_utils import briefing_filename
+
+st.set_page_config(page_title="ERCOT Grid-to-Price Intelligence Agent", layout="wide")
+
+
+@st.cache_data(ttl=3600, show_spinner="Pulling ERCOT public data...")
+def load_ercot_data(settlement_point: str, hours: int) -> dict:
+    client = ErcotClient()
+    return bundle_to_dict(client.fetch_bundle(settlement_point, hours))
+
+
+def latest_value(df: pd.DataFrame, column: str):
+    if df.empty or column not in df.columns:
+        return None
+    clean = df.dropna(subset=[column]).sort_values("timestamp")
+    return None if clean.empty else clean.iloc[-1][column]
+
+
+def trend(df: pd.DataFrame, column: str) -> str:
+    if df.empty or column not in df.columns or len(df.dropna(subset=[column])) < 2:
+        return "insufficient data"
+    clean = df.dropna(subset=[column]).sort_values("timestamp")
+    current = float(clean.iloc[-1][column])
+    baseline = float(clean.iloc[:-1][column].tail(min(8, len(clean) - 1)).mean())
+    if baseline == 0:
+        return "insufficient data"
+    change = (current - baseline) / abs(baseline) * 100
+    return f"{change:+.1f}% vs rolling baseline"
+
+
+def evidence_table(*groups: list[dict]) -> pd.DataFrame:
+    rows = []
+    for group in groups:
+        for item in group:
+            rows.extend(item.get("evidence", []))
+    if not rows:
+        return pd.DataFrame(columns=["metric", "observed_value", "baseline", "timestamp", "source_dataset"])
+    return pd.DataFrame(rows).drop_duplicates()
+
+
+def markdown_briefing(settlement_point: str, hours: int, persona: str, grid_signals: list[dict], price_signals: list[dict], reasoning: dict, exposure: dict, evidence: pd.DataFrame) -> str:
+    lines = [
+        f"# ERCOT Grid-to-Price Intelligence Brief",
+        "",
+        f"- Settlement point: `{settlement_point}`",
+        f"- Window: last {hours} hours",
+        f"- Persona: {persona}",
+        "",
+        "## Observed Grid Signals",
+    ]
+    for signal in grid_signals:
+        lines.append(f"- {signal.get('signal_name')}: {signal.get('direction')} ({signal.get('confidence')})")
+    lines += ["", "## Observed Price Signals"]
+    for signal in price_signals:
+        lines.append(f"- {signal.get('price_signal')}: current ${signal.get('current_price')}/MWh, baseline ${signal.get('baseline_price')}/MWh ({signal.get('confidence')})")
+    lines += [
+        "",
+        "## Interpretation",
+        reasoning.get("explanation", "insufficient data"),
+        f"Likely driver: {reasoning.get('likely_driver', 'insufficient data')}",
+        f"Confidence: {reasoning.get('confidence', 'Low')}",
+        "",
+        "## Exposure and Possible Actions",
+        f"Exposure: {exposure.get('exposure')}",
+    ]
+    lines.extend([f"- {action}" for action in exposure.get("possible_actions", [])])
+    lines += ["", "## Linked Signals"]
+    lines.extend([f"- {signal}" for signal in exposure.get("linked_signals", [])] or ["- insufficient data"])
+    lines += ["", "## Evidence"]
+    if evidence.empty:
+        lines.append("insufficient data")
+    else:
+        lines.append(evidence.to_markdown(index=False))
+    lines += ["", f"_{DISCLAIMER}_", ""]
+    return "\n".join(lines)
+
+
+def save_briefing(content: str) -> Path:
+    out_dir = Path("outputs/briefings")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / briefing_filename()
+    path.write_text(content)
+    return path
+
+
+st.title("ERCOT Grid-to-Price Intelligence Agent")
+
+with st.sidebar:
+    settlement_point = st.selectbox("Settlement point", SETTLEMENT_POINTS, index=0)
+    hours = st.selectbox("Time window", [6, 12, 24, 48], index=2, format_func=lambda h: f"{h}h")
+    persona = st.selectbox("Persona", PERSONAS, index=0)
+    if st.button("Refresh now", use_container_width=True):
+        st.cache_data.clear()
+    last = load_last_success()
+    st.caption(f"Last successful pull: {last.get('last_refresh') if last else 'None yet'}")
+
+try:
+    data = load_ercot_data(settlement_point, hours)
+except ErcotDataError as exc:
+    st.error(str(exc))
+    st.stop()
+
+rt_df = data["rt_prices"]
+da_df = data["da_prices"]
+load_df = data["load"]
+wind_df = data["wind"]
+solar_df = data["solar"]
+
+grid_signals = detect_grid_signals(load_df, wind_df, solar_df)
+price_signals = detect_price_signals(rt_df, da_df)
+reasoning = reason_about_market(grid_signals, price_signals)
+exposure = generate_exposure_actions(persona, grid_signals, price_signals, reasoning)
+evidence = evidence_table(grid_signals, price_signals, [reasoning])
+
+st.subheader("Market Snapshot")
+current_rt = latest_value(rt_df, "price")
+current_da = latest_value(da_df, "price")
+spread = current_rt - current_da if current_rt is not None and current_da is not None else None
+cols = st.columns(5)
+cols[0].metric("Current RT price", "insufficient data" if current_rt is None else f"${current_rt:,.2f}/MWh")
+cols[1].metric("Day-ahead price", "insufficient data" if current_da is None else f"${current_da:,.2f}/MWh")
+cols[2].metric("RT vs DA spread", "insufficient data" if spread is None else f"${spread:,.2f}/MWh")
+cols[3].metric("Load trend", trend(load_df, "load_mw"))
+cols[4].metric("Wind / solar trend", f"{trend(wind_df, 'wind_mw')} / {trend(solar_df, 'solar_mw')}")
+
+st.subheader("Charts")
+st.plotly_chart(price_chart(rt_df, da_df), use_container_width=True)
+left, right = st.columns(2)
+left.plotly_chart(load_chart(load_df), use_container_width=True)
+right.plotly_chart(renewable_chart(wind_df, solar_df), use_container_width=True)
+
+st.subheader("Agent Output")
+tab_grid, tab_price, tab_reasoning, tab_exposure = st.tabs(["Grid signals", "Price signals", "Reasoning", "Exposure and actions"])
+tab_grid.json(grid_signals)
+tab_price.json(price_signals)
+tab_reasoning.write(reasoning.get("explanation"))
+tab_reasoning.json(reasoning)
+tab_exposure.write(f"Exposure: {exposure.get('exposure')}")
+for action in exposure.get("possible_actions", []):
+    tab_exposure.write(f"- {action}")
+tab_exposure.caption(DISCLAIMER)
+
+st.subheader("Evidence Table")
+st.dataframe(evidence, use_container_width=True)
+
+st.subheader("Export")
+brief = markdown_briefing(settlement_point, hours, persona, grid_signals, price_signals, reasoning, exposure, evidence)
+saved_path = save_briefing(brief)
+st.download_button("Export briefing as markdown", brief, file_name=saved_path.name, mime="text/markdown")
+st.caption(f"Saved latest briefing to `{saved_path}`")
