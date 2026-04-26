@@ -54,6 +54,10 @@ class PriceSignal:
 class ReasoningOutput:
     explanation: str
     likely_driver: str
+    market_read: str
+    likely_drivers: list[str]
+    supporting_observations: list[str]
+    unmodeled_factors: list[str]
     confidence: str
     evidence: list[dict[str, Any]]
     caveats: list[str] = field(default_factory=list)

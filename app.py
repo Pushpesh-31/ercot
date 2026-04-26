@@ -48,6 +48,36 @@ def snapshot_field(label: str, value: str) -> None:
     st.write(value)
 
 
+def money(value) -> str:
+    return "insufficient data" if value is None else f"${float(value):,.2f}/MWh"
+
+
+def percent(value) -> str:
+    return "insufficient data" if value is None else f"{float(value):+,.1f}%"
+
+
+def signal_evidence_text(signal: dict) -> str:
+    rows = signal.get("evidence", [])
+    if not rows:
+        return "No supporting evidence rows were available for this signal."
+    parts = []
+    for row in rows:
+        metric = row.get("metric", "metric")
+        observed = row.get("observed_value", "insufficient data")
+        baseline = row.get("baseline", "insufficient data")
+        timestamp = row.get("timestamp", "")
+        parts.append(f"{metric}: observed {observed}, baseline {baseline}" + (f" at {timestamp}" if timestamp else ""))
+    return "; ".join(parts)
+
+
+def render_list(items: list[str], empty: str = "None identified") -> None:
+    if not items:
+        st.write(empty)
+        return
+    for item in items:
+        st.write(f"- {item}")
+
+
 def evidence_table(*groups: list[dict]) -> pd.DataFrame:
     rows = []
     for group in groups:
@@ -76,9 +106,16 @@ def markdown_briefing(settlement_point: str, hours: int, persona: str, grid_sign
     lines += [
         "",
         "## Interpretation",
-        reasoning.get("explanation", "insufficient data"),
-        f"Likely driver: {reasoning.get('likely_driver', 'insufficient data')}",
+        reasoning.get("market_read") or reasoning.get("explanation", "insufficient data"),
+        f"Likely drivers: {', '.join(reasoning.get('likely_drivers', [])) or reasoning.get('likely_driver', 'insufficient data')}",
         f"Confidence: {reasoning.get('confidence', 'Low')}",
+        "",
+        "## Supporting Observations",
+    ]
+    lines.extend([f"- {item}" for item in reasoning.get("supporting_observations", [])] or ["- insufficient data"])
+    lines += ["", "## Unmodeled Factors"]
+    lines.extend([f"- {item}" for item in reasoning.get("unmodeled_factors", [])] or ["- insufficient data"])
+    lines += [
         "",
         "## Exposure and Possible Actions",
         f"Exposure: {exposure.get('exposure')}",
@@ -155,15 +192,61 @@ left.plotly_chart(load_chart(load_df), use_container_width=True)
 right.plotly_chart(renewable_chart(wind_df, solar_df), use_container_width=True)
 
 st.subheader("Agent Output")
-tab_grid, tab_price, tab_reasoning, tab_exposure = st.tabs(["Grid signals", "Price signals", "Reasoning", "Exposure and actions"])
-tab_grid.json(grid_signals)
-tab_price.json(price_signals)
-tab_reasoning.write(reasoning.get("explanation"))
-tab_reasoning.json(reasoning)
-tab_exposure.write(f"Exposure: {exposure.get('exposure')}")
-for action in exposure.get("possible_actions", []):
-    tab_exposure.write(f"- {action}")
-tab_exposure.caption(DISCLAIMER)
+st.markdown(f"**Market read:** {reasoning.get('market_read') or reasoning.get('explanation', 'insufficient data')}")
+summary_cols = st.columns([1, 2])
+summary_cols[0].metric("Confidence", reasoning.get("confidence", "Low"))
+with summary_cols[1]:
+    st.markdown("**Likely drivers**")
+    render_list(reasoning.get("likely_drivers", []) or [reasoning.get("likely_driver", "insufficient data")])
+
+tab_reasoning, tab_grid, tab_price, tab_exposure, tab_raw = st.tabs(["Reasoning", "Grid signals", "Price signals", "Exposure", "Raw data"])
+
+with tab_reasoning:
+    st.markdown("**Supporting observations**")
+    render_list(reasoning.get("supporting_observations", []), "No supporting observations were identified.")
+    st.markdown("**Unmodeled factors to check**")
+    render_list(reasoning.get("unmodeled_factors", []), "No unmodeled factors were identified.")
+    st.markdown("**Caveats**")
+    render_list(reasoning.get("caveats", []))
+
+with tab_grid:
+    for signal in grid_signals:
+        st.markdown(f"**{signal.get('signal_name', 'Grid signal')}**")
+        st.write(f"Direction: {signal.get('direction', 'insufficient data')}")
+        if signal.get("magnitude") is not None:
+            st.write(f"Magnitude: {percent(signal.get('magnitude'))}")
+        st.write(f"Confidence: {signal.get('confidence', 'Low')}")
+        st.caption(signal_evidence_text(signal))
+
+with tab_price:
+    for signal in price_signals:
+        st.markdown(f"**{signal.get('price_signal', 'Price signal')}**")
+        st.write(f"Current real-time price: {money(signal.get('current_price'))}")
+        st.write(f"Rolling baseline price: {money(signal.get('baseline_price'))}")
+        st.write(f"Day-ahead price: {money(signal.get('day_ahead_price'))}")
+        st.write(f"RT vs DA spread: {money(signal.get('rt_da_spread'))}")
+        if signal.get("price_change") is not None:
+            st.write(f"Price change: {percent(signal.get('price_change'))}")
+        st.write(f"Confidence: {signal.get('confidence', 'Low')}")
+        st.caption(signal_evidence_text(signal))
+
+with tab_exposure:
+    st.markdown(f"**Exposure:** {exposure.get('exposure')}")
+    st.markdown("**Data-grounded checks**")
+    render_list(exposure.get("possible_actions", []))
+    st.markdown("**Linked signals**")
+    render_list(exposure.get("linked_signals", []), "No material linked signals.")
+    st.caption(DISCLAIMER)
+
+with tab_raw:
+    with st.expander("Raw grid signals"):
+        st.json(grid_signals)
+    with st.expander("Raw price signals"):
+        st.json(price_signals)
+    with st.expander("Raw reasoning output"):
+        st.json(reasoning)
+    with st.expander("Raw exposure output"):
+        st.json(exposure)
 
 st.subheader("Evidence Table")
 st.dataframe(evidence, use_container_width=True)

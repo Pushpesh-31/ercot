@@ -19,6 +19,12 @@ def _material_signals(grid_signals: list[dict], price_signals: list[dict]) -> li
     return names
 
 
+def _driver_text(reasoning: dict) -> str:
+    drivers = reasoning.get("likely_drivers") or [reasoning.get("likely_driver")]
+    clean = [driver for driver in drivers if driver and driver != "insufficient data"]
+    return ", ".join(clean) if clean else "the observed market signals"
+
+
 def generate_exposure_actions(persona: str, grid_signals: list[dict], price_signals: list[dict], reasoning: dict) -> dict:
     linked = _material_signals(grid_signals, price_signals)
     if not linked:
@@ -33,30 +39,32 @@ def generate_exposure_actions(persona: str, grid_signals: list[dict], price_sign
     price_names = [signal.get("price_signal", "") for signal in price_signals]
     upward = any(name in price_names for name in ["real-time price spike", "real-time premium to day-ahead", "real-time price volatility"])
     negative = "negative price signal" in price_names or "real-time price drop" in price_names
+    driver_text = _driver_text(reasoning)
+    has_unmodeled_driver = any(driver in driver_text for driver in ["congestion", "constraint", "outage", "reserve", "scarcity"])
 
     if persona == "industrial consumer":
-        exposure = "real-time power cost risk" if upward else "potential variability in real-time indexed power costs"
+        exposure = f"real-time indexed cost exposure tied to {driver_text}" if upward else f"potential variability in indexed power costs tied to {driver_text}"
         actions = [
-            "evaluate flexible load reduction where operationally feasible",
-            "review exposure to real-time indexed pricing",
-            "consider hedging future exposure",
-            "monitor volatility in upcoming settlement intervals",
+            "compare current interval exposure against day-ahead or fixed-price coverage",
+            "check whether flexible load can avoid intervals with persistent real-time premiums",
+            "watch whether the same settlement point continues to clear above day-ahead in the next refresh",
+            "review congestion, outage, and reserve reports before attributing the move to demand alone" if has_unmodeled_driver else "watch load and renewable trends to see whether the driver persists",
         ]
     elif persona == "generator / asset owner":
-        exposure = "potential revenue opportunity or operational dispatch signal" if upward else "potential revenue pressure during weaker price intervals"
+        exposure = f"dispatch economics are being influenced by {driver_text}" if upward else f"revenue conditions may be pressured by {driver_text}"
         actions = [
-            "monitor dispatch economics",
-            "evaluate availability during high-price periods" if upward else "review availability assumptions during low-price periods",
-            "review outage timing against observed volatility",
-            "monitor renewable recovery and load trend",
+            "compare unit availability and offer assumptions against the observed settlement-point move",
+            "monitor whether the price signal persists beyond a single interval",
+            "review local congestion, outage, and reserve context before treating the move as system-wide" if has_unmodeled_driver else "track whether load or renewable conditions continue to support the price move",
+            "separate hub-wide movement from localized settlement-point effects",
         ]
     else:
-        exposure = "market volatility / grid stress" if upward else "market variability with possible surplus energy pressure" if negative else "market variability"
+        exposure = f"market movement appears tied to {driver_text}" if upward else f"market variability appears tied to {driver_text}" if negative else f"market variability with {driver_text}"
         actions = [
-            "monitor next intervals",
-            "compare with day-ahead prices",
-            "watch renewable recovery and load trend",
-            "review whether the same driver persists after the next hourly refresh",
+            "compare the next refresh against the current market read",
+            "track whether real-time prices continue to diverge from day-ahead",
+            "watch load, wind, and solar baselines for confirmation or reversal",
+            "treat congestion, outage, and reserve conditions as unmodeled explanations when system-wide grid signals do not explain price moves",
         ]
 
     return ExposureOutput(
