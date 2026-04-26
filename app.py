@@ -11,7 +11,7 @@ from src.agents.price_impact_agent import detect_price_signals
 from src.agents.reasoning_agent import reason_about_market
 from src.data.cache import load_last_success
 from src.data.ercot_client import SETTLEMENT_POINTS, ErcotClient, ErcotDataError, bundle_to_dict
-from src.utils.plotting import load_chart, price_chart, renewable_chart
+from src.utils.plotting import load_chart, price_chart, price_load_overlay_chart, renewable_chart
 from src.utils.schemas import DISCLAIMER
 from src.utils.time_utils import briefing_filename
 
@@ -214,6 +214,7 @@ with trend_cols[2]:
     snapshot_field("Solar trend", trend(solar_df, "solar_mw"))
 
 st.subheader("Charts")
+st.plotly_chart(price_load_overlay_chart(rt_df, da_df, load_df), use_container_width=True)
 st.plotly_chart(price_chart(rt_df, da_df), use_container_width=True)
 left, right = st.columns(2)
 left.plotly_chart(load_chart(load_df), use_container_width=True)

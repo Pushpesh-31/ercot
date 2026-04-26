@@ -3,6 +3,7 @@ from __future__ import annotations
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
 
 def price_chart(rt_df: pd.DataFrame, da_df: pd.DataFrame):
@@ -19,6 +20,36 @@ def price_chart(rt_df: pd.DataFrame, da_df: pd.DataFrame):
         yaxis_title="Price ($/MWh)",
         legend_title="Market",
     )
+    return fig
+
+
+def price_load_overlay_chart(rt_df: pd.DataFrame, da_df: pd.DataFrame, load_df: pd.DataFrame):
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+    if not rt_df.empty:
+        fig.add_trace(
+            go.Scatter(x=rt_df["timestamp"], y=rt_df["price"], mode="lines", name="Real-Time Price"),
+            secondary_y=False,
+        )
+    if not da_df.empty:
+        fig.add_trace(
+            go.Scatter(x=da_df["timestamp"], y=da_df["price"], mode="lines", name="Day-Ahead Price", line={"dash": "dot"}),
+            secondary_y=False,
+        )
+    if not load_df.empty:
+        fig.add_trace(
+            go.Scatter(x=load_df["timestamp"], y=load_df["load_mw"], mode="lines", name="ERCOT Load Forecast", line={"dash": "dash"}),
+            secondary_y=True,
+        )
+    fig.update_layout(
+        title="Prices Overlaid With ERCOT Load Forecast",
+        height=420,
+        margin={"l": 10, "r": 10, "t": 55, "b": 35},
+        xaxis_title="Interval time",
+        legend_title="Series",
+        hovermode="x unified",
+    )
+    fig.update_yaxes(title_text="Price ($/MWh)", secondary_y=False)
+    fig.update_yaxes(title_text="Load Forecast (MW)", secondary_y=True)
     return fig
 
 
