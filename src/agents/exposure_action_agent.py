@@ -50,29 +50,46 @@ def generate_exposure_actions(persona: str, grid_signals: list[dict], price_sign
 
     if persona == "industrial consumer":
         if loose:
-            exposure = f"real-time indexed costs appear favorable versus day-ahead, tied to {driver_text}"
+            exposure = f"for load with real-time-indexed or pass-through exposure, costs may be favorable versus day-ahead, tied to {driver_text}. fixed or hedged supply may see limited direct impact unless the contract passes through index, congestion, ancillary, imbalance, or settlement charges"
             actions = [
-                "compare actual real-time exposure against day-ahead or fixed-price coverage for the same interval",
+                "compare actual real-time exposure against day-ahead, fixed-price, or hedged coverage for the same interval",
                 "watch whether the RT discount persists or reverses in the next refresh",
                 "check whether lower load or stronger renewable output continues to support the discount",
+                "review supply contract pass-through language for congestion, ancillary, imbalance, and settlement charges",
                 "treat weather/load forecast error and renewable forecast error as plausible day-ahead drivers, not confirmed causes",
             ]
         else:
-            exposure = f"real-time indexed cost exposure tied to {driver_text}" if upward else f"potential variability in indexed power costs tied to {driver_text}"
+            exposure = (
+                f"for load with real-time-indexed or pass-through exposure, costs may be elevated, tied to {driver_text}. fixed or hedged supply may mute the direct impact unless the contract passes through index, congestion, ancillary, imbalance, or settlement charges"
+                if upward
+                else f"industrial cost impact depends on contract structure; any index or pass-through exposure may vary with {driver_text}, while fixed or hedged supply may see limited direct impact"
+            )
             actions = [
-                "compare current interval exposure against day-ahead or fixed-price coverage",
-                "check whether flexible load can avoid intervals with persistent real-time premiums",
-                "watch whether the same settlement point continues to clear above day-ahead in the next refresh",
+                "compare current interval exposure against day-ahead, fixed-price, or hedged coverage",
+                "review supply contract pass-through language for congestion, ancillary, imbalance, and settlement charges",
+                "check whether flexible load has value if real-time premiums persist",
+                "watch whether the same settlement point continues to clear above day-ahead in the next refresh" if upward else "watch whether the observed price condition persists in the next refresh",
                 "review congestion, outage, and reserve reports before attributing the move to demand alone" if has_unmodeled_driver else "watch load and renewable trends to see whether the driver persists",
             ]
     elif persona == "generator / asset owner":
-        exposure = f"dispatch economics are being influenced by {driver_text}" if upward else f"revenue conditions may be pressured by {driver_text}"
-        actions = [
-            "compare unit availability and offer assumptions against the observed settlement-point move",
-            "monitor whether the price signal persists beyond a single interval",
-            "review local congestion, outage, and reserve context before treating the move as system-wide" if has_unmodeled_driver else "track whether load or renewable conditions continue to support the price move",
-            "separate hub-wide movement from localized settlement-point effects",
-        ]
+        if upward:
+            exposure = f"higher selected settlement-point prices may improve revenue opportunity for available generation exposed to that price, tied to {driver_text}. asset-specific value depends on node, marginal cost, availability, hedge position, and dispatch constraints"
+            actions = [
+                "compare the selected settlement point with the asset node or settlement exposure",
+                "compare market price against marginal operating cost, fuel cost, start cost, and offer assumptions",
+                "check availability, outage status, and dispatch constraints before treating the price move as realizable value",
+                "review hedge or forward-sale exposure to see whether higher spot prices flow through to revenue",
+                "separate hub-wide movement from localized nodal or congestion effects",
+            ]
+        else:
+            exposure = f"lower or discounted real-time prices may pressure revenue for exposed generation, tied to {driver_text}. asset-specific impact depends on node, marginal cost, availability, hedge position, and dispatch constraints"
+            actions = [
+                "compare the selected settlement point with the asset node or settlement exposure",
+                "check whether the asset remains economic against marginal operating cost and offer assumptions",
+                "review hedge or forward-sale exposure to see whether lower spot prices are offset contractually",
+                "track whether load or renewable conditions continue to support the lower-price signal",
+                "separate hub-wide movement from localized nodal or congestion effects",
+            ]
     else:
         exposure = f"market movement appears tied to {driver_text}" if upward else f"market variability appears tied to {driver_text}" if negative or loose else f"market variability with {driver_text}"
         actions = [
