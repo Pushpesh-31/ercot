@@ -43,6 +43,11 @@ def trend(df: pd.DataFrame, column: str) -> str:
     return f"{change:+.1f}% vs rolling baseline"
 
 
+def snapshot_field(label: str, value: str) -> None:
+    st.markdown(f"**{label}**")
+    st.write(value)
+
+
 def evidence_table(*groups: list[dict]) -> pd.DataFrame:
     rows = []
     for group in groups:
@@ -131,12 +136,17 @@ st.subheader("Market Snapshot")
 current_rt = latest_value(rt_df, "price")
 current_da = latest_value(da_df, "price")
 spread = current_rt - current_da if current_rt is not None and current_da is not None else None
-cols = st.columns(5)
-cols[0].metric("Current RT price", "insufficient data" if current_rt is None else f"${current_rt:,.2f}/MWh")
-cols[1].metric("Day-ahead price", "insufficient data" if current_da is None else f"${current_da:,.2f}/MWh")
-cols[2].metric("RT vs DA spread", "insufficient data" if spread is None else f"${spread:,.2f}/MWh")
-cols[3].metric("Load trend", trend(load_df, "load_mw"))
-cols[4].metric("Wind / solar trend", f"{trend(wind_df, 'wind_mw')} / {trend(solar_df, 'solar_mw')}")
+price_cols = st.columns(3)
+price_cols[0].metric("Current RT price", "insufficient data" if current_rt is None else f"${current_rt:,.2f}/MWh")
+price_cols[1].metric("Day-ahead price", "insufficient data" if current_da is None else f"${current_da:,.2f}/MWh")
+price_cols[2].metric("RT vs DA spread", "insufficient data" if spread is None else f"${spread:,.2f}/MWh")
+trend_cols = st.columns(3)
+with trend_cols[0]:
+    snapshot_field("Load trend", trend(load_df, "load_mw"))
+with trend_cols[1]:
+    snapshot_field("Wind trend", trend(wind_df, "wind_mw"))
+with trend_cols[2]:
+    snapshot_field("Solar trend", trend(solar_df, "solar_mw"))
 
 st.subheader("Charts")
 st.plotly_chart(price_chart(rt_df, da_df), use_container_width=True)
