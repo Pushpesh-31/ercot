@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import pandas as pd
-import plotly.express as px
 import plotly.graph_objects as go
 
 
@@ -22,53 +21,32 @@ def price_chart(rt_df: pd.DataFrame, da_df: pd.DataFrame):
     return fig
 
 
-def price_load_overlay_chart(rt_df: pd.DataFrame, da_df: pd.DataFrame, load_df: pd.DataFrame):
+def load_chart(load_df: pd.DataFrame):
+    if load_df.empty:
+        return go.Figure().update_layout(title="ERCOT Load Forecast", height=320, xaxis_title="Interval time", yaxis_title="Load Forecast (MW)")
+    clean = load_df.dropna(subset=["load_mw"]).sort_values("timestamp").copy()
+    clean["rolling_baseline_mw"] = clean["load_mw"].rolling(window=min(8, len(clean)), min_periods=1).mean()
     fig = go.Figure()
-    if not rt_df.empty:
-        fig.add_trace(
-            go.Scatter(x=rt_df["timestamp"], y=rt_df["price"], mode="lines", name="Real-Time Price"),
-        )
-    if not da_df.empty:
-        fig.add_trace(
-            go.Scatter(x=da_df["timestamp"], y=da_df["price"], mode="lines", name="Day-Ahead Price", line={"dash": "dot"}),
-        )
-    if not load_df.empty:
-        fig.add_trace(
-            go.Scatter(
-                x=load_df["timestamp"],
-                y=load_df["load_mw"],
-                mode="lines",
-                name="ERCOT Load Forecast",
-                line={"dash": "dash"},
-                yaxis="y2",
-            ),
-        )
+    fig.add_trace(go.Scatter(x=clean["timestamp"], y=clean["load_mw"], mode="lines", name="ERCOT Load Forecast"))
+    fig.add_trace(
+        go.Scatter(
+            x=clean["timestamp"],
+            y=clean["rolling_baseline_mw"],
+            mode="lines",
+            name="Rolling Baseline",
+            line={"dash": "dot"},
+        ),
+    )
     fig.update_layout(
-        title="Prices Overlaid With ERCOT Load Forecast",
-        height=420,
+        title="ERCOT Load Forecast vs Rolling Baseline",
+        height=320,
         margin={"l": 10, "r": 10, "t": 55, "b": 35},
         xaxis_title="Interval time",
-        yaxis={"title": "Price ($/MWh)"},
-        yaxis2={
-            "title": "Load Forecast (MW)",
-            "overlaying": "y",
-            "side": "right",
-            "showgrid": False,
-        },
+        yaxis_title="Load Forecast (MW)",
         legend_title="Series",
         hovermode="x unified",
     )
     return fig
-
-
-def load_chart(load_df: pd.DataFrame):
-    if load_df.empty:
-        return go.Figure().update_layout(title="ERCOT Load", height=320, xaxis_title="Interval time", yaxis_title="Load (MW)")
-    return px.line(load_df, x="timestamp", y="load_mw", labels={"load_mw": "Load (MW)", "timestamp": "Interval time"}).update_layout(
-        title="ERCOT Load",
-        height=320,
-        margin={"l": 10, "r": 10, "t": 55, "b": 35},
-    )
 
 
 def renewable_chart(wind_df: pd.DataFrame, solar_df: pd.DataFrame):
