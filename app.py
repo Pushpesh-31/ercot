@@ -56,6 +56,34 @@ def percent(value) -> str:
     return "insufficient data" if value is None else f"{float(value):+,.1f}%"
 
 
+def display_label(value) -> str:
+    if value is None:
+        return "Insufficient Data"
+    text = str(value).strip()
+    if not text:
+        return "Insufficient Data"
+    text = text.replace("real-time", "Real-Time").replace("day-ahead", "Day-Ahead")
+    replacements = {
+        "rt": "RT",
+        "da": "DA",
+        "ercot": "ERCOT",
+    }
+    words = []
+    for word in text.replace("/", " / ").split():
+        lower = word.lower()
+        words.append(replacements.get(lower, word if any(char.isupper() for char in word) else word.capitalize()))
+    return " ".join(words)
+
+
+def display_sentence(value) -> str:
+    if value is None:
+        return "Insufficient data"
+    text = str(value).strip()
+    if not text:
+        return "Insufficient data"
+    return text[0].upper() + text[1:]
+
+
 def signal_evidence_text(signal: dict) -> str:
     rows = signal.get("evidence", [])
     if not rows:
@@ -75,7 +103,7 @@ def render_list(items: list[str], empty: str = "None identified") -> None:
         st.write(empty)
         return
     for item in items:
-        st.write(f"- {item}")
+        st.write(f"- {display_sentence(item)}")
 
 
 def evidence_table(*groups: list[dict]) -> pd.DataFrame:
@@ -99,30 +127,30 @@ def markdown_briefing(settlement_point: str, hours: int, persona: str, grid_sign
         "## Observed Grid Signals",
     ]
     for signal in grid_signals:
-        lines.append(f"- {signal.get('signal_name')}: {signal.get('direction')} ({signal.get('confidence')})")
+        lines.append(f"- {display_label(signal.get('signal_name'))}: {display_label(signal.get('direction'))} ({signal.get('confidence')})")
     lines += ["", "## Observed Price Signals"]
     for signal in price_signals:
-        lines.append(f"- {signal.get('price_signal')}: current ${signal.get('current_price')}/MWh, baseline ${signal.get('baseline_price')}/MWh ({signal.get('confidence')})")
+        lines.append(f"- {display_label(signal.get('price_signal'))}: current ${signal.get('current_price')}/MWh, baseline ${signal.get('baseline_price')}/MWh ({signal.get('confidence')})")
     lines += [
         "",
         "## Interpretation",
-        reasoning.get("market_read") or reasoning.get("explanation", "insufficient data"),
-        f"Likely drivers: {', '.join(reasoning.get('likely_drivers', [])) or reasoning.get('likely_driver', 'insufficient data')}",
+        display_sentence(reasoning.get("market_read") or reasoning.get("explanation", "insufficient data")),
+        f"Likely drivers: {', '.join(display_sentence(item) for item in reasoning.get('likely_drivers', [])) or display_sentence(reasoning.get('likely_driver', 'insufficient data'))}",
         f"Confidence: {reasoning.get('confidence', 'Low')}",
         "",
         "## Supporting Observations",
     ]
-    lines.extend([f"- {item}" for item in reasoning.get("supporting_observations", [])] or ["- insufficient data"])
+    lines.extend([f"- {display_sentence(item)}" for item in reasoning.get("supporting_observations", [])] or ["- Insufficient data"])
     lines += ["", "## Unmodeled Factors"]
-    lines.extend([f"- {item}" for item in reasoning.get("unmodeled_factors", [])] or ["- insufficient data"])
+    lines.extend([f"- {display_sentence(item)}" for item in reasoning.get("unmodeled_factors", [])] or ["- Insufficient data"])
     lines += [
         "",
         "## Exposure and Possible Actions",
-        f"Exposure: {exposure.get('exposure')}",
+        f"Exposure: {display_sentence(exposure.get('exposure'))}",
     ]
-    lines.extend([f"- {action}" for action in exposure.get("possible_actions", [])])
+    lines.extend([f"- {display_sentence(action)}" for action in exposure.get("possible_actions", [])])
     lines += ["", "## Linked Signals"]
-    lines.extend([f"- {signal}" for signal in exposure.get("linked_signals", [])] or ["- insufficient data"])
+    lines.extend([f"- {display_label(signal)}" for signal in exposure.get("linked_signals", [])] or ["- Insufficient data"])
     lines += ["", "## Evidence"]
     if evidence.empty:
         lines.append("insufficient data")
@@ -192,27 +220,27 @@ left.plotly_chart(load_chart(load_df), use_container_width=True)
 right.plotly_chart(renewable_chart(wind_df, solar_df), use_container_width=True)
 
 st.subheader("Agent Output")
-st.markdown(f"**Market read:** {reasoning.get('market_read') or reasoning.get('explanation', 'insufficient data')}")
+st.markdown(f"**Market Read:** {display_sentence(reasoning.get('market_read') or reasoning.get('explanation', 'insufficient data'))}")
 summary_cols = st.columns([1, 2])
 summary_cols[0].metric("Confidence", reasoning.get("confidence", "Low"))
 with summary_cols[1]:
-    st.markdown("**Likely drivers**")
+    st.markdown("**Likely Drivers**")
     render_list(reasoning.get("likely_drivers", []) or [reasoning.get("likely_driver", "insufficient data")])
 
-tab_reasoning, tab_grid, tab_price, tab_exposure, tab_raw = st.tabs(["Reasoning", "Grid signals", "Price signals", "Exposure", "Raw data"])
+tab_reasoning, tab_grid, tab_price, tab_exposure, tab_raw = st.tabs(["Reasoning", "Grid Signals", "Price Signals", "Exposure", "Raw Data"])
 
 with tab_reasoning:
-    st.markdown("**Supporting observations**")
+    st.markdown("**Supporting Observations**")
     render_list(reasoning.get("supporting_observations", []), "No supporting observations were identified.")
-    st.markdown("**Unmodeled factors to check**")
+    st.markdown("**Unmodeled Factors To Check**")
     render_list(reasoning.get("unmodeled_factors", []), "No unmodeled factors were identified.")
     st.markdown("**Caveats**")
     render_list(reasoning.get("caveats", []))
 
 with tab_grid:
     for signal in grid_signals:
-        st.markdown(f"**{signal.get('signal_name', 'Grid signal')}**")
-        st.write(f"Direction: {signal.get('direction', 'insufficient data')}")
+        st.markdown(f"**{display_label(signal.get('signal_name', 'Grid signal'))}**")
+        st.write(f"Direction: {display_label(signal.get('direction', 'insufficient data'))}")
         if signal.get("magnitude") is not None:
             st.write(f"Magnitude: {percent(signal.get('magnitude'))}")
         st.write(f"Confidence: {signal.get('confidence', 'Low')}")
@@ -220,22 +248,22 @@ with tab_grid:
 
 with tab_price:
     for signal in price_signals:
-        st.markdown(f"**{signal.get('price_signal', 'Price signal')}**")
-        st.write(f"Current real-time price: {money(signal.get('current_price'))}")
-        st.write(f"Rolling baseline price: {money(signal.get('baseline_price'))}")
-        st.write(f"Day-ahead price: {money(signal.get('day_ahead_price'))}")
-        st.write(f"RT vs DA spread: {money(signal.get('rt_da_spread'))}")
+        st.markdown(f"**{display_label(signal.get('price_signal', 'Price signal'))}**")
+        st.write(f"Current Real-Time Price: {money(signal.get('current_price'))}")
+        st.write(f"Rolling Baseline Price: {money(signal.get('baseline_price'))}")
+        st.write(f"Day-Ahead Price: {money(signal.get('day_ahead_price'))}")
+        st.write(f"RT vs DA Spread: {money(signal.get('rt_da_spread'))}")
         if signal.get("price_change") is not None:
-            st.write(f"Price change: {percent(signal.get('price_change'))}")
+            st.write(f"Price Change: {percent(signal.get('price_change'))}")
         st.write(f"Confidence: {signal.get('confidence', 'Low')}")
         st.caption(signal_evidence_text(signal))
 
 with tab_exposure:
-    st.markdown(f"**Exposure:** {exposure.get('exposure')}")
-    st.markdown("**Data-grounded checks**")
+    st.markdown(f"**Exposure:** {display_sentence(exposure.get('exposure'))}")
+    st.markdown("**Data-Grounded Checks**")
     render_list(exposure.get("possible_actions", []))
-    st.markdown("**Linked signals**")
-    render_list(exposure.get("linked_signals", []), "No material linked signals.")
+    st.markdown("**Linked Signals**")
+    render_list([display_label(signal) for signal in exposure.get("linked_signals", [])], "No material linked signals.")
     st.caption(DISCLAIMER)
 
 with tab_raw:

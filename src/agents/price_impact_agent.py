@@ -108,6 +108,19 @@ def detect_price_signals(rt_df: pd.DataFrame, da_df: pd.DataFrame) -> list[dict]
             ),
         )
 
+    if da_price is not None and spread is not None and current < da_price:
+        discount_threshold = max(10.0, abs(da_price) * 0.25)
+        if abs(spread) > discount_threshold:
+            signals.append(
+                PriceSignal(
+                    price_signal="real-time discount to day-ahead",
+                    price_change=round(price_change * 100, 2) if price_change is not None else None,
+                    evidence=[_evidence("RT minus DA spread", spread, da_price, latest["timestamp"], "NP6-905-CD and NP4-190-CD settlement point prices")],
+                    confidence=CONFIDENCE_MEDIUM,
+                    **common,
+                ),
+            )
+
     volatility_threshold = max(25.0, abs(median_price) * 0.75)
     if rolling_std > volatility_threshold:
         signals.append(

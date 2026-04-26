@@ -45,3 +45,18 @@ def test_high_confidence_when_renewables_recover_and_prices_drop():
 
     assert result["confidence"] == "High"
     assert "surplus energy pressure" in result["likely_drivers"]
+
+
+def test_rt_discount_with_lower_load_points_to_looser_conditions():
+    grid = [
+        {"signal_name": "demand drop", "evidence": [{"metric": "load"}]},
+        {"signal_name": "renewable generation recovery", "evidence": [{"metric": "wind"}]},
+    ]
+    price = [{"price_signal": "real-time discount to day-ahead", "evidence": [{"metric": "spread"}]}]
+
+    result = reason_about_market(grid, price)
+
+    assert result["confidence"] == "Medium"
+    assert "lower real-time load" in result["likely_drivers"]
+    assert "stronger renewable output" in result["likely_drivers"]
+    assert "weather and temperature forecast error" in result["unmodeled_factors"]

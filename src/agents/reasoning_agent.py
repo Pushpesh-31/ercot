@@ -28,6 +28,7 @@ def reason_about_market(grid_signals: list[dict], price_signals: list[dict]) -> 
     evidence = _evidence(grid_signals, price_signals)
 
     has_load_up = "demand spike" in grid_names
+    has_load_down = "demand drop" in grid_names
     has_wind_drop = "wind generation drop" in grid_names
     has_solar_drop = "solar generation drop" in grid_names
     has_tightening = "possible supply tightening" in grid_names
@@ -35,6 +36,7 @@ def reason_about_market(grid_signals: list[dict], price_signals: list[dict]) -> 
     has_price_spike = _signal_present(price_names, {"real-time price spike", "real-time premium to day-ahead"})
     has_price_drop = _signal_present(price_names, {"real-time price drop", "negative price signal"})
     has_da_spread = "real-time premium to day-ahead" in price_names
+    has_da_discount = "real-time discount to day-ahead" in price_names
     has_volatility = "real-time price volatility" in price_names
 
     base_unmodeled = [
@@ -86,6 +88,52 @@ def reason_about_market(grid_signals: list[dict], price_signals: list[dict]) -> 
             supporting_observations=observations,
             unmodeled_factors=["local congestion", "curtailment conditions", "negative-price settlement point effects"],
             confidence=CONFIDENCE_HIGH,
+            evidence=evidence,
+            caveats=caveats,
+        ).__dict__
+
+    if has_da_discount and (has_load_down or has_renewable_recovery or has_price_drop):
+        drivers = []
+        observations = ["real-time prices are materially below the matching day-ahead price"]
+        if has_load_down:
+            drivers.append("lower real-time load")
+            observations.append("load is below its recent rolling baseline")
+        if has_renewable_recovery:
+            drivers.append("stronger renewable output")
+            observations.append("wind or solar output is above its recent rolling baseline")
+        if has_price_drop:
+            observations.append("real-time prices weakened relative to the recent rolling baseline")
+        return ReasoningOutput(
+            explanation="Real-time prices cleared below day-ahead while load and renewable signals point to looser real-time conditions than the day-ahead market expected.",
+            likely_driver=_driver_summary(drivers, "looser real-time conditions versus day-ahead expectations"),
+            market_read="Real-time prices are below day-ahead while visible grid conditions look looser, which is consistent with actual supply-demand conditions coming in easier than day-ahead expectations.",
+            likely_drivers=drivers or ["looser real-time conditions versus day-ahead expectations"],
+            supporting_observations=observations,
+            unmodeled_factors=[
+                "weather and temperature forecast error",
+                "day-ahead load forecast error",
+                "renewable forecast error",
+                "day-ahead congestion or commitment assumptions that did not persist in real time",
+            ],
+            confidence=CONFIDENCE_MEDIUM,
+            evidence=evidence,
+            caveats=caveats,
+        ).__dict__
+
+    if has_da_discount:
+        return ReasoningOutput(
+            explanation="Real-time prices cleared materially below day-ahead, but the current v1 grid signals do not fully explain the discount.",
+            likely_driver="looser real-time conditions versus day-ahead expectations",
+            market_read="Real-time prices are below day-ahead expectations. This can happen when actual load, renewable output, congestion, or commitment conditions are easier than expected, but the visible v1 signals only partially explain the move.",
+            likely_drivers=["looser real-time conditions versus day-ahead expectations"],
+            supporting_observations=["real-time prices are materially below the matching day-ahead price"],
+            unmodeled_factors=[
+                "weather and temperature forecast error",
+                "day-ahead load forecast error",
+                "renewable forecast error",
+                "day-ahead congestion or commitment assumptions that did not persist in real time",
+            ],
+            confidence=CONFIDENCE_MEDIUM,
             evidence=evidence,
             caveats=caveats,
         ).__dict__
