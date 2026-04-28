@@ -44,7 +44,7 @@ def load_location_intelligence(hours: int) -> pd.DataFrame:
         raise
     except Exception as exc:
         raise ErcotDataError(f"Location intelligence unavailable. Unable to pull ERCOT settlement point prices. Details: {exc}") from exc
-    return build_location_intelligence(prices["rt_prices"], prices["da_prices"], mapping)
+    return build_location_intelligence(prices["rt_prices"], prices["da_prices"], mapping_df=mapping)
 
 
 def fetch_settlement_point_prices_compat(client: ErcotClient, hours: int) -> dict[str, pd.DataFrame]:

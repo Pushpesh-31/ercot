@@ -106,3 +106,19 @@ def test_location_leaderboards_and_explanations_render_with_missing_da():
     assert spreads.empty
     assert not volatility.empty
     assert explanations
+
+
+def test_location_intelligence_ignores_invalid_volatility_window():
+    ts = pd.date_range("2026-04-24 00:00", periods=4, freq="15min", tz="America/Chicago")
+    rt = pd.DataFrame(
+        {
+            "timestamp": ts,
+            "settlement_point": ["HB_HOUSTON"] * 4,
+            "rt_price": [20, 22, 24, 26],
+        },
+    )
+
+    result = build_location_intelligence(rt, pd.DataFrame(), volatility_window=pd.DataFrame({"bad": [1]}))
+
+    assert not result.empty
+    assert "volatility_score" in result.columns

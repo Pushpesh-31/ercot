@@ -130,6 +130,12 @@ def _empty_location_frame() -> pd.DataFrame:
 
 
 def build_location_intelligence(rt_prices: pd.DataFrame, da_prices: pd.DataFrame, mapping_df: pd.DataFrame | None = None, volatility_window: int = 8) -> pd.DataFrame:
+    if isinstance(mapping_df, int):
+        volatility_window = mapping_df
+        mapping_df = None
+    if not isinstance(volatility_window, int) or volatility_window < 1:
+        volatility_window = 8
+
     if rt_prices.empty or not {"timestamp", "settlement_point", "rt_price"}.issubset(rt_prices.columns):
         return _empty_location_frame()
 
