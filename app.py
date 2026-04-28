@@ -20,7 +20,7 @@ from src.data.cache import load_last_success
 from src.data.ercot_client import SETTLEMENT_POINTS, ErcotClient, ErcotDataError, bundle_to_dict
 from src.utils.plotting import load_chart, price_chart, renewable_chart
 from src.utils.schemas import DISCLAIMER
-from src.utils.time_utils import briefing_filename
+from src.utils.time_utils import ERCOT_TZ, briefing_filename, now_ercot
 
 st.set_page_config(page_title="ERCOT Grid-to-Price Intelligence Agent", layout="wide")
 
@@ -33,9 +33,65 @@ def load_ercot_data(settlement_point: str, hours: int) -> dict:
 
 @st.cache_data(ttl=3600, show_spinner="Pulling ERCOT settlement point prices...")
 def load_location_intelligence(hours: int) -> pd.DataFrame:
-    client = ErcotClient()
-    prices = client.fetch_settlement_point_prices(hours)
+    try:
+        client = ErcotClient()
+        if hasattr(client, "fetch_settlement_point_prices"):
+            prices = client.fetch_settlement_point_prices(hours)
+        else:
+            prices = fetch_settlement_point_prices_compat(client, hours)
+    except ErcotDataError:
+        raise
+    except Exception as exc:
+        raise ErcotDataError(f"Location intelligence unavailable. Unable to pull ERCOT settlement point prices. Details: {exc}") from exc
     return build_location_intelligence(prices["rt_prices"], prices["da_prices"])
+
+
+def fetch_settlement_point_prices_compat(client: ErcotClient, hours: int) -> dict[str, pd.DataFrame]:
+    end = now_ercot()
+    start = end - pd.Timedelta(hours=hours)
+    fetch_start = start.floor("d")
+    fetch_end = (end + pd.Timedelta(days=1)).floor("d")
+    rt_raw = client.api.get_spp_real_time_15_min(fetch_start, end=fetch_end)
+    da_raw = client.api.get_spp_day_ahead_hourly(fetch_start, end=fetch_end)
+    return {
+        "rt_prices": normalize_location_prices(rt_raw, start, end, "rt_price", "NP6-905-CD"),
+        "da_prices": normalize_location_prices(da_raw, start, end, "da_price", "NP4-190-CD"),
+    }
+
+
+def normalize_location_prices(raw: pd.DataFrame, start: pd.Timestamp, end: pd.Timestamp, price_name: str, source: str) -> pd.DataFrame:
+    columns = ["timestamp", "settlement_point", price_name, "source_dataset"]
+    if raw is None or raw.empty:
+        return pd.DataFrame(columns=columns)
+    time_col = first_existing(raw, ["Interval Start", "Delivery Date", "deliveryDate"])
+    loc_col = first_existing(raw, ["Location", "Settlement Point", "settlementPoint", "SettlementPoint"])
+    price_col = first_existing(raw, ["Settlement Point Price", "SPP", "Price", "settlementPointPrice"])
+    if not all([time_col, loc_col, price_col]):
+        return pd.DataFrame(columns=columns)
+    out = pd.DataFrame(
+        {
+            "timestamp": pd.to_datetime(raw[time_col]),
+            "settlement_point": raw[loc_col].astype(str),
+            price_name: pd.to_numeric(raw[price_col], errors="coerce"),
+            "source_dataset": source,
+        },
+    ).dropna(subset=["timestamp"])
+    if out.empty:
+        return out
+    if out["timestamp"].dt.tz is None:
+        out["timestamp"] = out["timestamp"].dt.tz_localize(ERCOT_TZ, ambiguous="NaT", nonexistent="NaT")
+    return out[(out["timestamp"] >= start) & (out["timestamp"] <= end)].sort_values("timestamp").reset_index(drop=True)
+
+
+def first_existing(df: pd.DataFrame, names: list[str]) -> str | None:
+    for name in names:
+        if name in df.columns:
+            return name
+    lower = {str(col).lower(): col for col in df.columns}
+    for name in names:
+        if name.lower() in lower:
+            return lower[name.lower()]
+    return None
 
 
 def latest_value(df: pd.DataFrame, column: str):
