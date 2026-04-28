@@ -105,6 +105,25 @@ class ErcotClient:
         self._save_success(bundle, settlement_point, hours)
         return bundle
 
+    def fetch_settlement_point_prices(self, hours: int) -> dict[str, pd.DataFrame]:
+        end = now_ercot()
+        start = end - pd.Timedelta(hours=hours)
+        fetch_start = start.floor("d")
+        fetch_end = (end + pd.Timedelta(days=1)).floor("d")
+
+        try:
+            rt_raw = self.api.get_spp_real_time_15_min(fetch_start, end=fetch_end)
+            da_raw = self.api.get_spp_day_ahead_hourly(fetch_start, end=fetch_end)
+        except requests.RequestException as exc:
+            raise ErcotDataError(f"ERCOT settlement point price request failed. {credential_help()} Details: {exc}") from exc
+        except Exception as exc:
+            raise ErcotDataError(f"Unable to pull ERCOT settlement point prices. {credential_help()} Details: {exc}") from exc
+
+        return {
+            "rt_prices": self._all_prices(rt_raw, start, end, "NP6-905-CD", "rt_price"),
+            "da_prices": self._all_prices(da_raw, start, end, "NP4-190-CD", "da_price"),
+        }
+
     @staticmethod
     def _filter_window(df: pd.DataFrame, start: pd.Timestamp, end: pd.Timestamp) -> pd.DataFrame:
         if df.empty or "timestamp" not in df.columns:
@@ -130,6 +149,25 @@ class ErcotClient:
                 "timestamp": pd.to_datetime(df[time_col]),
                 "settlement_point": df[loc_col].astype(str),
                 "price": pd.to_numeric(df[price_col], errors="coerce"),
+                "source_dataset": source,
+            },
+        )
+        return self._filter_window(out.dropna(subset=["timestamp"]), start, end)
+
+    def _all_prices(self, raw: pd.DataFrame, start: pd.Timestamp, end: pd.Timestamp, source: str, price_name: str) -> pd.DataFrame:
+        if raw is None or raw.empty:
+            return pd.DataFrame(columns=["timestamp", "settlement_point", price_name, "source_dataset"])
+        df = raw.copy()
+        time_col = self._first_existing(df, ["Interval Start", "Delivery Date", "deliveryDate"])
+        loc_col = self._first_existing(df, ["Location", "Settlement Point", "settlementPoint", "SettlementPoint"])
+        price_col = self._first_existing(df, ["Settlement Point Price", "SPP", "Price", "settlementPointPrice"])
+        if not all([time_col, loc_col, price_col]):
+            return pd.DataFrame(columns=["timestamp", "settlement_point", price_name, "source_dataset"])
+        out = pd.DataFrame(
+            {
+                "timestamp": pd.to_datetime(df[time_col]),
+                "settlement_point": df[loc_col].astype(str),
+                price_name: pd.to_numeric(df[price_col], errors="coerce"),
                 "source_dataset": source,
             },
         )

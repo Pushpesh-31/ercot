@@ -53,11 +53,12 @@ pytest
 
 ## Intelligence Agent MVP
 
-The app now opens with three agent-oriented tabs before the detailed charts and raw data:
+The app now opens with agent-oriented tabs before the detailed charts and raw data:
 
 - **Market Pulse**: latest real-time price, day-ahead price when available, RT minus DA spread, latest load forecast, wind and solar contribution, renewable share of load, and a Low / Medium / High risk label.
 - **Persona Exposure**: deterministic exposure cards for data center operators, industrial energy buyers, power traders, retail electricity providers, renewable operators, and battery/storage operators.
 - **Agent Brief**: executive-style summary with current market risk, recent changes, main drivers, most exposed personas, next 6-hour watch items, recommended actions, assumptions, and confidence.
+- **Location Intelligence**: settlement-point-level price spike, RT-to-DA spread, volatility, and congestion-proxy leaderboards using public ERCOT SPP data.
 
 The scoring is rule-based and does not require an LLM. If data is missing, the app reports `insufficient data` and still renders the persona cards using available signals. No fake market data is used.
 
@@ -101,6 +102,15 @@ Market risk is based on transparent heuristics:
 - demand spikes, renewable generation drops, and possible supply tightening add physical-grid context.
 
 Persona exposure adjusts that market risk by economic sensitivity. Load-heavy personas are more exposed to high prices and premiums, traders and storage are more exposed to spreads and volatility, renewable operators are more exposed to negative prices, curtailment, and discounted pricing.
+
+Location intelligence uses proxy heuristics only:
+
+- settlement points are classified as hubs, load zones, or resource nodes from their names,
+- deviation is measured against the relevant hub/load-zone group average when available, otherwise the system average,
+- volatility is rolling real-time price standard deviation over the recent interval window,
+- congestion proxy score combines absolute deviation from reference average, RT-to-DA spread, and sudden interval price jumps.
+
+The congestion label is not an ERCOT constraint or shadow-price measure.
 
 ## Limitations
 

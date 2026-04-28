@@ -6,6 +6,13 @@ import pandas as pd
 import streamlit as st
 
 from src.agents.grid_signal_agent import detect_grid_signals
+from src.agents.location_intelligence_agent import (
+    build_location_intelligence,
+    price_spike_leaderboards,
+    spread_leaderboard,
+    top_location_explanations,
+    volatility_leaderboard,
+)
 from src.agents.persona_exposure_agent import build_agent_brief, build_market_pulse, build_persona_exposures
 from src.agents.price_impact_agent import detect_price_signals
 from src.agents.reasoning_agent import reason_about_market
@@ -22,6 +29,13 @@ st.set_page_config(page_title="ERCOT Grid-to-Price Intelligence Agent", layout="
 def load_ercot_data(settlement_point: str, hours: int) -> dict:
     client = ErcotClient()
     return bundle_to_dict(client.fetch_bundle(settlement_point, hours))
+
+
+@st.cache_data(ttl=3600, show_spinner="Pulling ERCOT settlement point prices...")
+def load_location_intelligence(hours: int) -> pd.DataFrame:
+    client = ErcotClient()
+    prices = client.fetch_settlement_point_prices(hours)
+    return build_location_intelligence(prices["rt_prices"], prices["da_prices"])
 
 
 def latest_value(df: pd.DataFrame, column: str):
@@ -152,6 +166,22 @@ def analyst_lede(agent_brief: dict, pulse: dict, settlement_point: str, hours: i
     )
 
 
+def risk_badge(label: str) -> str:
+    palette = {
+        "High congestion": ("#991b1b", "#fee2e2"),
+        "Medium congestion": ("#92400e", "#fef3c7"),
+        "Low congestion": ("#166534", "#dcfce7"),
+        "Extreme": ("#991b1b", "#fee2e2"),
+        "Volatile": ("#92400e", "#fef3c7"),
+        "Stable": ("#166534", "#dcfce7"),
+    }
+    color, background = palette.get(label, ("#374151", "#f3f4f6"))
+    return (
+        f"<span style='display:inline-block;padding:0.15rem 0.5rem;border-radius:999px;"
+        f"font-size:0.8rem;font-weight:600;color:{color};background:{background};'>{label}</span>"
+    )
+
+
 def markdown_briefing(settlement_point: str, hours: int, market_pulse: dict, persona_cards: list[dict], agent_brief: dict, grid_signals: list[dict], price_signals: list[dict], reasoning: dict, evidence: pd.DataFrame) -> str:
     lines = [
         f"# ERCOT Grid-to-Price Intelligence Brief",
@@ -233,6 +263,7 @@ st.info("Uses public ERCOT data only. This is market intelligence, not trading a
 with st.sidebar:
     settlement_point = st.selectbox("Settlement point", SETTLEMENT_POINTS, index=0)
     hours = st.selectbox("Time window", [6, 12, 24, 48], index=2, format_func=lambda h: f"{h}h")
+    location_hours = st.selectbox("Location intelligence window", [3, 6, 12], index=1, format_func=lambda h: f"{h}h")
     if st.button("Refresh now", use_container_width=True):
         st.cache_data.clear()
     last = load_last_success()
@@ -258,8 +289,15 @@ persona_cards = build_persona_exposures(market_pulse, grid_signals, price_signal
 agent_brief = build_agent_brief(market_pulse, persona_cards, reasoning)
 evidence = evidence_table(grid_signals, price_signals, [reasoning])
 
-tab_pulse, tab_persona, tab_brief, tab_charts, tab_signals, tab_raw = st.tabs(
-    ["Market Pulse", "Persona Exposure", "Agent Brief", "Charts", "Signals & Evidence", "Raw Data"],
+try:
+    location_df = load_location_intelligence(location_hours)
+    location_error = None
+except ErcotDataError as exc:
+    location_df = pd.DataFrame()
+    location_error = str(exc)
+
+tab_pulse, tab_persona, tab_brief, tab_location, tab_charts, tab_signals, tab_raw = st.tabs(
+    ["Market Pulse", "Persona Exposure", "Agent Brief", "Location Intelligence", "Charts", "Signals & Evidence", "Raw Data"],
 )
 
 with tab_pulse:
@@ -330,6 +368,92 @@ with tab_brief:
         render_card_list(agent_brief["assumptions"])
     st.caption("Brief is generated from deterministic structured logic. LLM polishing is not enabled in this build.")
 
+with tab_location:
+    st.subheader("Location Intelligence")
+    st.caption("Top settlement-point anomalies from public ERCOT SPP data. Congestion labels are proxy signals based on price separation, spreads, and jumps.")
+    if location_error:
+        st.warning(f"Location intelligence unavailable: {location_error}")
+    elif location_df.empty:
+        st.info("Insufficient settlement point data to build location intelligence for the selected window.")
+    else:
+        latest_locations = location_df.sort_values("timestamp").groupby("settlement_point", as_index=False).tail(1)
+        latest_timestamp = latest_locations["timestamp"].max()
+        high_congestion = int((latest_locations["congestion_label"] == "High congestion").sum())
+        medium_congestion = int((latest_locations["congestion_label"] == "Medium congestion").sum())
+        extreme_volatility = int((latest_locations["volatility_label"] == "Extreme").sum())
+        loc_cols = st.columns(4)
+        loc_cols[0].metric("Settlement points", f"{latest_locations['settlement_point'].nunique():,}")
+        loc_cols[1].metric("Latest interval", "insufficient data" if pd.isna(latest_timestamp) else str(latest_timestamp))
+        loc_cols[2].metric("High / medium signals", f"{high_congestion} / {medium_congestion}")
+        loc_cols[3].metric("Extreme volatility", extreme_volatility)
+
+        high_prices, low_prices = price_spike_leaderboards(location_df)
+        spreads = spread_leaderboard(location_df)
+        volatility = volatility_leaderboard(location_df)
+        top_anomalies = latest_locations.sort_values(
+            ["congestion_score", "volatility_score", "deviation_from_reference"],
+            ascending=[False, False, False],
+        ).head(3)
+
+        st.markdown("### Top congestion signals today")
+        anomaly_cols = st.columns(3)
+        for col, (_, row) in zip(anomaly_cols, top_anomalies.iterrows()):
+            with col.container(border=True):
+                st.markdown(f"**{row['settlement_point']}**")
+                st.markdown(risk_badge(row["congestion_label"]), unsafe_allow_html=True)
+                st.metric("RT price", money(row.get("rt_price")))
+                st.caption(f"Type: {display_label(row.get('settlement_point_type'))}")
+                st.caption(f"Deviation: {money(row.get('deviation_from_hub_or_zone_average'))}")
+                if pd.notna(row.get("rt_da_spread")):
+                    st.caption(f"RT-DA spread: {money(row.get('rt_da_spread'))}")
+                st.markdown(risk_badge(row["volatility_label"]), unsafe_allow_html=True)
+
+        st.markdown("**Agent readout**")
+        for explanation in top_location_explanations(location_df):
+            st.write(f"- {explanation}")
+
+        st.markdown("**Decision tables**")
+        table_cols = st.columns(3)
+        with table_cols[0]:
+            st.markdown("**Highest RT prices**")
+            st.dataframe(high_prices.head(5), use_container_width=True, hide_index=True)
+        with table_cols[1]:
+            st.markdown("**Widest RT-DA spreads**")
+            if spreads.empty:
+                st.info("DA prices unavailable.")
+            else:
+                st.dataframe(spreads.head(5), use_container_width=True, hide_index=True)
+        with table_cols[2]:
+            st.markdown("**Most volatile**")
+            st.dataframe(volatility.head(5), use_container_width=True, hide_index=True)
+
+        with st.expander("Full leaderboards"):
+            price_tab, spread_tab, volatility_tab = st.tabs(["Price Spike Leaderboard", "Spread Leaderboard", "Volatility Leaderboard"])
+            with price_tab:
+                left, right = st.columns(2)
+                with left:
+                    st.markdown("**Top 10 highest RT prices**")
+                    st.dataframe(high_prices, use_container_width=True, hide_index=True)
+                    if not high_prices.empty:
+                        st.bar_chart(high_prices.set_index("settlement_point")["rt_price"])
+                with right:
+                    st.markdown("**Top 10 lowest RT prices**")
+                    st.dataframe(low_prices, use_container_width=True, hide_index=True)
+                    if not low_prices.empty:
+                        st.bar_chart(low_prices.set_index("settlement_point")["rt_price"])
+            with spread_tab:
+                st.markdown("**Top 10 highest RT minus DA spreads**")
+                if spreads.empty:
+                    st.info("Day-ahead settlement point prices are unavailable for this window, so spread ranking is not available.")
+                else:
+                    st.dataframe(spreads, use_container_width=True, hide_index=True)
+                    st.bar_chart(spreads.set_index("settlement_point")["rt_da_spread"])
+            with volatility_tab:
+                st.markdown("**Top 10 rolling volatility scores**")
+                st.dataframe(volatility, use_container_width=True, hide_index=True)
+                if not volatility.empty:
+                    st.bar_chart(volatility.set_index("settlement_point")["volatility_score"])
+
 with tab_charts:
     st.subheader("Charts")
     st.caption("Detailed price and grid context for users who want to inspect the data behind the pulse and brief.")
@@ -373,6 +497,8 @@ with tab_raw:
         st.json(persona_cards)
     with st.expander("Raw agent brief"):
         st.json(agent_brief)
+    with st.expander("Raw location intelligence sample"):
+        st.dataframe(location_df.head(100), use_container_width=True)
     with st.expander("Raw grid signals"):
         st.json(grid_signals)
     with st.expander("Raw price signals"):
