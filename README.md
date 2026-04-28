@@ -105,12 +105,13 @@ Persona exposure adjusts that market risk by economic sensitivity. Load-heavy pe
 
 Location intelligence uses proxy heuristics only:
 
-- settlement points are classified as hubs, load zones, or resource nodes from their names,
-- deviation is measured against the relevant hub/load-zone group average when available, otherwise the system average,
+- resource nodes are enriched from ERCOT's settlement points and electrical buses mapping when available,
+- reference hubs are taken from ERCOT mapping or derived from settlement load zone when possible,
+- deviation is measured against the mapped reference hub when that hub price is available, otherwise the relevant hub/load-zone group average or system average,
 - volatility is rolling real-time price standard deviation over the recent interval window,
 - congestion proxy score combines absolute deviation from reference average, RT-to-DA spread, and sudden interval price jumps.
 
-The congestion label is not an ERCOT constraint or shadow-price measure.
+The congestion label is not an ERCOT constraint or shadow-price measure. If the mapping file is unavailable or a settlement point is not mapped, the app marks the location as `Unmapped fallback` and still renders the leaderboards.
 
 ## Limitations
 

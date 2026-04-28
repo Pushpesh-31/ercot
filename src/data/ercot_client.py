@@ -125,6 +125,18 @@ class ErcotClient:
         }
 
     @staticmethod
+    def fetch_settlement_point_mapping() -> pd.DataFrame:
+        try:
+            from gridstatus import Ercot
+        except ImportError as exc:
+            raise ErcotDataError("gridstatus is required for ERCOT settlement point mapping.") from exc
+
+        try:
+            return Ercot().get_settlement_points_electrical_bus_mapping("latest")
+        except Exception as exc:
+            raise ErcotDataError(f"Unable to pull ERCOT settlement point mapping. Details: {exc}") from exc
+
+    @staticmethod
     def _filter_window(df: pd.DataFrame, start: pd.Timestamp, end: pd.Timestamp) -> pd.DataFrame:
         if df.empty or "timestamp" not in df.columns:
             return df

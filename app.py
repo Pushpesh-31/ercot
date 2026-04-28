@@ -39,11 +39,12 @@ def load_location_intelligence(hours: int) -> pd.DataFrame:
             prices = client.fetch_settlement_point_prices(hours)
         else:
             prices = fetch_settlement_point_prices_compat(client, hours)
+        mapping = fetch_settlement_point_mapping_compat(client)
     except ErcotDataError:
         raise
     except Exception as exc:
         raise ErcotDataError(f"Location intelligence unavailable. Unable to pull ERCOT settlement point prices. Details: {exc}") from exc
-    return build_location_intelligence(prices["rt_prices"], prices["da_prices"])
+    return build_location_intelligence(prices["rt_prices"], prices["da_prices"], mapping)
 
 
 def fetch_settlement_point_prices_compat(client: ErcotClient, hours: int) -> dict[str, pd.DataFrame]:
@@ -57,6 +58,17 @@ def fetch_settlement_point_prices_compat(client: ErcotClient, hours: int) -> dic
         "rt_prices": normalize_location_prices(rt_raw, start, end, "rt_price", "NP6-905-CD"),
         "da_prices": normalize_location_prices(da_raw, start, end, "da_price", "NP4-190-CD"),
     }
+
+
+def fetch_settlement_point_mapping_compat(client: ErcotClient) -> pd.DataFrame:
+    try:
+        if hasattr(client, "fetch_settlement_point_mapping"):
+            return client.fetch_settlement_point_mapping()
+        from gridstatus import Ercot
+
+        return Ercot().get_settlement_points_electrical_bus_mapping("latest")
+    except Exception:
+        return pd.DataFrame()
 
 
 def normalize_location_prices(raw: pd.DataFrame, start: pd.Timestamp, end: pd.Timestamp, price_name: str, source: str) -> pd.DataFrame:
@@ -437,11 +449,12 @@ with tab_location:
         high_congestion = int((latest_locations["congestion_label"] == "High congestion").sum())
         medium_congestion = int((latest_locations["congestion_label"] == "Medium congestion").sum())
         extreme_volatility = int((latest_locations["volatility_label"] == "Extreme").sum())
+        mapped_locations = int((latest_locations["mapping_confidence"] != "Unmapped fallback").sum()) if "mapping_confidence" in latest_locations.columns else 0
         loc_cols = st.columns(4)
         loc_cols[0].metric("Settlement points", f"{latest_locations['settlement_point'].nunique():,}")
         loc_cols[1].metric("Latest interval", "insufficient data" if pd.isna(latest_timestamp) else str(latest_timestamp))
         loc_cols[2].metric("High / medium signals", f"{high_congestion} / {medium_congestion}")
-        loc_cols[3].metric("Extreme volatility", extreme_volatility)
+        loc_cols[3].metric("Mapped references", f"{mapped_locations:,}")
 
         high_prices, low_prices = price_spike_leaderboards(location_df)
         spreads = spread_leaderboard(location_df)
@@ -455,11 +468,12 @@ with tab_location:
         anomaly_cols = st.columns(3)
         for col, (_, row) in zip(anomaly_cols, top_anomalies.iterrows()):
             with col.container(border=True):
-                st.markdown(f"**{row['settlement_point']}**")
+                st.markdown(f"**{row.get('settlement_point_display', row['settlement_point'])}**")
                 st.markdown(risk_badge(row["congestion_label"]), unsafe_allow_html=True)
                 st.metric("RT price", money(row.get("rt_price")))
                 st.caption(f"Type: {display_label(row.get('settlement_point_type'))}")
-                st.caption(f"Deviation: {money(row.get('deviation_from_hub_or_zone_average'))}")
+                st.caption(f"Hub deviation: {money(row.get('deviation_from_reference_hub'))}")
+                st.caption(f"Mapping: {row.get('mapping_confidence', 'Unmapped fallback')}")
                 if pd.notna(row.get("rt_da_spread")):
                     st.caption(f"RT-DA spread: {money(row.get('rt_da_spread'))}")
                 st.markdown(risk_badge(row["volatility_label"]), unsafe_allow_html=True)
@@ -491,24 +505,24 @@ with tab_location:
                     st.markdown("**Top 10 highest RT prices**")
                     st.dataframe(high_prices, use_container_width=True, hide_index=True)
                     if not high_prices.empty:
-                        st.bar_chart(high_prices.set_index("settlement_point")["rt_price"])
+                        st.bar_chart(high_prices.set_index("settlement_point_display")["rt_price"])
                 with right:
                     st.markdown("**Top 10 lowest RT prices**")
                     st.dataframe(low_prices, use_container_width=True, hide_index=True)
                     if not low_prices.empty:
-                        st.bar_chart(low_prices.set_index("settlement_point")["rt_price"])
+                        st.bar_chart(low_prices.set_index("settlement_point_display")["rt_price"])
             with spread_tab:
                 st.markdown("**Top 10 highest RT minus DA spreads**")
                 if spreads.empty:
                     st.info("Day-ahead settlement point prices are unavailable for this window, so spread ranking is not available.")
                 else:
                     st.dataframe(spreads, use_container_width=True, hide_index=True)
-                    st.bar_chart(spreads.set_index("settlement_point")["rt_da_spread"])
+                    st.bar_chart(spreads.set_index("settlement_point_display")["rt_da_spread"])
             with volatility_tab:
                 st.markdown("**Top 10 rolling volatility scores**")
                 st.dataframe(volatility, use_container_width=True, hide_index=True)
                 if not volatility.empty:
-                    st.bar_chart(volatility.set_index("settlement_point")["volatility_score"])
+                    st.bar_chart(volatility.set_index("settlement_point_display")["volatility_score"])
 
 with tab_charts:
     st.subheader("Charts")
