@@ -5,8 +5,8 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-from src.agents.exposure_action_agent import PERSONAS, generate_exposure_actions
 from src.agents.grid_signal_agent import detect_grid_signals
+from src.agents.persona_exposure_agent import build_agent_brief, build_market_pulse, build_persona_exposures
 from src.agents.price_impact_agent import detect_price_signals
 from src.agents.reasoning_agent import reason_about_market
 from src.data.cache import load_last_success
@@ -54,6 +54,10 @@ def money(value) -> str:
 
 def percent(value) -> str:
     return "insufficient data" if value is None else f"{float(value):+,.1f}%"
+
+
+def mw(value) -> str:
+    return "insufficient data" if value is None else f"{float(value):,.0f} MW"
 
 
 def display_label(value) -> str:
@@ -116,13 +120,73 @@ def evidence_table(*groups: list[dict]) -> pd.DataFrame:
     return pd.DataFrame(rows).drop_duplicates()
 
 
-def markdown_briefing(settlement_point: str, hours: int, persona: str, grid_signals: list[dict], price_signals: list[dict], reasoning: dict, exposure: dict, evidence: pd.DataFrame) -> str:
+def risk_help(risk: str) -> str:
+    descriptions = {
+        "Low": "Low: prices and physical grid signals are not showing material stress in this window.",
+        "Medium": "Medium: one or more price, spread, volatility, or grid tightening signals is elevated.",
+        "High": "High: price stress, RT/DA divergence, volatility, or supply tightening is materially elevated.",
+    }
+    return descriptions.get(risk, "Risk is based on deterministic price and grid heuristics.")
+
+
+def render_card_list(items: list[str], empty: str = "Insufficient data") -> None:
+    if not items:
+        st.write(empty)
+        return
+    for item in items:
+        st.write(f"- {display_sentence(item)}")
+
+
+def first_items(items: list[str], count: int = 2) -> list[str]:
+    return items[:count] if items else []
+
+
+def analyst_lede(agent_brief: dict, pulse: dict, settlement_point: str, hours: int) -> str:
+    risk = agent_brief.get("current_market_risk", "Low")
+    spread = pulse.get("rt_da_spread")
+    spread_text = "without a confirmed RT/DA spread" if spread is None else f"with RT trading {spread:+.2f}/MWh versus day-ahead"
+    exposed = ", ".join(agent_brief.get("most_exposed_personas", [])) or "no persona showing elevated exposure"
+    return (
+        f"Market risk is **{risk}** at `{settlement_point}` over the last {hours} hours, "
+        f"{spread_text}. The most exposed segment is: {exposed}."
+    )
+
+
+def markdown_briefing(settlement_point: str, hours: int, market_pulse: dict, persona_cards: list[dict], agent_brief: dict, grid_signals: list[dict], price_signals: list[dict], reasoning: dict, evidence: pd.DataFrame) -> str:
     lines = [
         f"# ERCOT Grid-to-Price Intelligence Brief",
         "",
         f"- Settlement point: `{settlement_point}`",
         f"- Window: last {hours} hours",
-        f"- Persona: {persona}",
+        f"- Current market risk: {agent_brief.get('current_market_risk', 'Low')}",
+        f"- Confidence: {agent_brief.get('confidence', 'Low')}",
+        "",
+        "## Market Pulse",
+        f"- Latest RT price: {money(market_pulse.get('latest_rt_price'))}",
+        f"- Latest DA price: {money(market_pulse.get('latest_da_price'))}",
+        f"- RT minus DA spread: {money(market_pulse.get('rt_da_spread'))}",
+        f"- Latest load forecast: {mw(market_pulse.get('latest_load_mw'))}",
+        f"- Wind generation: {mw(market_pulse.get('latest_wind_mw'))}",
+        f"- Solar generation: {mw(market_pulse.get('latest_solar_mw'))}",
+        "",
+        "## Agent Brief",
+        f"- Most exposed personas: {', '.join(agent_brief.get('most_exposed_personas', []))}",
+        "",
+        "### What Changed Recently",
+    ]
+    lines.extend([f"- {display_sentence(item)}" for item in agent_brief.get("what_changed_recently", [])] or ["- Insufficient data"])
+    lines += ["", "### Main Drivers"]
+    lines.extend([f"- {display_sentence(item)}" for item in agent_brief.get("main_drivers", [])] or ["- Insufficient data"])
+    lines += ["", "### Recommended Actions"]
+    lines.extend([f"- {display_sentence(item)}" for item in agent_brief.get("recommended_actions", [])] or ["- Insufficient data"])
+    lines += ["", "## Persona Exposure"]
+    for card in persona_cards:
+        lines.append(f"### {card['persona']}")
+        lines.append(f"- Exposure level: {card['exposure_level']}")
+        lines.append(f"- Confidence: {card['confidence']}")
+        lines.append(f"- What to watch next: {card['what_to_watch_next']}")
+        lines.append(f"- Possible action: {card['possible_action']}")
+    lines += [
         "",
         "## Observed Grid Signals",
     ]
@@ -145,12 +209,7 @@ def markdown_briefing(settlement_point: str, hours: int, persona: str, grid_sign
     lines.extend([f"- {display_sentence(item)}" for item in reasoning.get("unmodeled_factors", [])] or ["- Insufficient data"])
     lines += [
         "",
-        "## Exposure and Possible Actions",
-        f"Exposure: {display_sentence(exposure.get('exposure'))}",
     ]
-    lines.extend([f"- {display_sentence(action)}" for action in exposure.get("possible_actions", [])])
-    lines += ["", "## Linked Signals"]
-    lines.extend([f"- {display_label(signal)}" for signal in exposure.get("linked_signals", [])] or ["- Insufficient data"])
     lines += ["", "## Evidence"]
     if evidence.empty:
         lines.append("insufficient data")
@@ -169,11 +228,11 @@ def save_briefing(content: str) -> Path:
 
 
 st.title("ERCOT Grid-to-Price Intelligence Agent")
+st.info("Uses public ERCOT data only. This is market intelligence, not trading advice. Human review required.")
 
 with st.sidebar:
     settlement_point = st.selectbox("Settlement point", SETTLEMENT_POINTS, index=0)
     hours = st.selectbox("Time window", [6, 12, 24, 48], index=2, format_func=lambda h: f"{h}h")
-    persona = st.selectbox("Persona", PERSONAS, index=0)
     if st.button("Refresh now", use_container_width=True):
         st.cache_data.clear()
     last = load_last_success()
@@ -194,93 +253,135 @@ solar_df = data["solar"]
 grid_signals = detect_grid_signals(load_df, wind_df, solar_df)
 price_signals = detect_price_signals(rt_df, da_df)
 reasoning = reason_about_market(grid_signals, price_signals)
-exposure = generate_exposure_actions(persona, grid_signals, price_signals, reasoning)
+market_pulse = build_market_pulse(rt_df, da_df, load_df, wind_df, solar_df, grid_signals, price_signals)
+persona_cards = build_persona_exposures(market_pulse, grid_signals, price_signals, reasoning)
+agent_brief = build_agent_brief(market_pulse, persona_cards, reasoning)
 evidence = evidence_table(grid_signals, price_signals, [reasoning])
 
-st.subheader("Market Snapshot")
-current_rt = latest_value(rt_df, "price")
-current_da = latest_value(da_df, "price")
-spread = current_rt - current_da if current_rt is not None and current_da is not None else None
-price_cols = st.columns(3)
-price_cols[0].metric("Current RT price", "insufficient data" if current_rt is None else f"${current_rt:,.2f}/MWh")
-price_cols[1].metric("Day-ahead price", "insufficient data" if current_da is None else f"${current_da:,.2f}/MWh")
-price_cols[2].metric("RT vs DA spread", "insufficient data" if spread is None else f"${spread:,.2f}/MWh")
-trend_cols = st.columns(3)
-with trend_cols[0]:
-    snapshot_field("Load trend", trend(load_df, "load_mw"))
-with trend_cols[1]:
-    snapshot_field("Wind trend", trend(wind_df, "wind_mw"))
-with trend_cols[2]:
-    snapshot_field("Solar trend", trend(solar_df, "solar_mw"))
+tab_pulse, tab_persona, tab_brief, tab_charts, tab_signals, tab_raw = st.tabs(
+    ["Market Pulse", "Persona Exposure", "Agent Brief", "Charts", "Signals & Evidence", "Raw Data"],
+)
 
-st.subheader("Charts")
-st.plotly_chart(price_chart(rt_df, da_df), use_container_width=True)
-left, right = st.columns(2)
-left.plotly_chart(load_chart(load_df), use_container_width=True)
-right.plotly_chart(renewable_chart(wind_df, solar_df), use_container_width=True)
+with tab_pulse:
+    st.subheader("Market Pulse")
+    st.caption("One-screen readout of price stress, grid conditions, and the current rule-based market risk label.")
+    st.markdown(analyst_lede(agent_brief, market_pulse, settlement_point, hours))
+    pulse_cols = st.columns(4)
+    pulse_cols[0].metric("Market risk", market_pulse["risk_label"], help=risk_help(market_pulse["risk_label"]))
+    pulse_cols[1].metric("Latest RT price", money(market_pulse.get("latest_rt_price")))
+    pulse_cols[2].metric("Latest DA price", money(market_pulse.get("latest_da_price")))
+    pulse_cols[3].metric("RT minus DA", money(market_pulse.get("rt_da_spread")))
+    grid_cols = st.columns(4)
+    grid_cols[0].metric("Latest load forecast", mw(market_pulse.get("latest_load_mw")), percent(market_pulse.get("load_change_pct")) if market_pulse.get("load_change_pct") is not None else None)
+    grid_cols[1].metric("Wind generation", mw(market_pulse.get("latest_wind_mw")), percent(market_pulse.get("wind_change_pct")) if market_pulse.get("wind_change_pct") is not None else None)
+    grid_cols[2].metric("Solar generation", mw(market_pulse.get("latest_solar_mw")), percent(market_pulse.get("solar_change_pct")) if market_pulse.get("solar_change_pct") is not None else None)
+    grid_cols[3].metric("Renewable share of load", "insufficient data" if market_pulse.get("renewable_share") is None else f"{market_pulse['renewable_share']:,.1f}%")
+    with st.container(border=True):
+        st.markdown("**Current market read**")
+        st.write(display_sentence(reasoning.get("market_read") or reasoning.get("explanation", "insufficient data")))
+    with st.expander("Latest data timestamps"):
+        st.write(f"RT: {market_pulse.get('latest_rt_timestamp') or 'insufficient data'}")
+        st.write(f"DA: {market_pulse.get('latest_da_timestamp') or 'insufficient data'}")
+        st.write(f"Load: {market_pulse.get('latest_load_timestamp') or 'insufficient data'}")
 
-st.subheader("Agent Output")
-st.markdown(f"**Market Read:** {display_sentence(reasoning.get('market_read') or reasoning.get('explanation', 'insufficient data'))}")
-summary_cols = st.columns([1, 2])
-summary_cols[0].metric("Confidence", reasoning.get("confidence", "Low"))
-with summary_cols[1]:
-    st.markdown("**Likely Drivers**")
-    render_list(reasoning.get("likely_drivers", []) or [reasoning.get("likely_driver", "insufficient data")])
+with tab_persona:
+    st.subheader("Persona Exposure")
+    st.caption("Compact exposure map by user type. Cards use the same deterministic market pulse, then adjust for each persona's economic sensitivity.")
+    for row_start in range(0, len(persona_cards), 3):
+        cols = st.columns(3)
+        for col, card in zip(cols, persona_cards[row_start : row_start + 3]):
+            with col.container(border=True):
+                st.markdown(f"**{card['persona']}**")
+                metric_cols = st.columns(2)
+                metric_cols[0].metric("Exposure", card["exposure_level"])
+                metric_cols[1].metric("Confidence", card["confidence"])
+                st.markdown("**Drivers**")
+                render_card_list(first_items(card["main_drivers"], 2))
+                st.markdown("**Watch**")
+                st.caption(display_sentence(card["what_to_watch_next"]))
+                st.markdown("**Action**")
+                st.caption(display_sentence(card["possible_action"]))
+                with st.expander("Assumptions and full drivers"):
+                    render_card_list(card["main_drivers"])
+                    render_card_list(card["assumptions"])
 
-tab_reasoning, tab_grid, tab_price, tab_exposure, tab_raw = st.tabs(["Reasoning", "Grid Signals", "Price Signals", "Exposure", "Raw Data"])
+with tab_brief:
+    st.subheader("Agent Brief")
+    st.caption("Executive-style market note generated from the current grid and price signals.")
+    st.markdown(analyst_lede(agent_brief, market_pulse, settlement_point, hours))
+    brief_cols = st.columns([1, 1, 2])
+    brief_cols[0].metric("Risk", agent_brief["current_market_risk"])
+    brief_cols[1].metric("Confidence", agent_brief["confidence"])
+    with brief_cols[2]:
+        st.markdown("**Most exposed**")
+        st.write(", ".join(agent_brief["most_exposed_personas"]))
+    left, right = st.columns(2)
+    with left.container(border=True):
+        st.markdown("**What changed recently**")
+        render_card_list(agent_brief["what_changed_recently"])
+        st.markdown("**Main drivers**")
+        render_card_list(agent_brief["main_drivers"])
+    with right.container(border=True):
+        st.markdown("**Next 6-hour watch window**")
+        render_card_list(agent_brief["next_6_hour_watch_window"])
+        st.markdown("**Recommended actions**")
+        render_card_list(agent_brief["recommended_actions"])
+    with st.expander("Assumptions and confidence basis"):
+        render_card_list(agent_brief["assumptions"])
+    st.caption("Brief is generated from deterministic structured logic. LLM polishing is not enabled in this build.")
 
-with tab_reasoning:
-    st.markdown("**Supporting Observations**")
-    render_list(reasoning.get("supporting_observations", []), "No supporting observations were identified.")
-    st.markdown("**Unmodeled Factors To Check**")
-    render_list(reasoning.get("unmodeled_factors", []), "No unmodeled factors were identified.")
-    st.markdown("**Caveats**")
-    render_list(reasoning.get("caveats", []))
+with tab_charts:
+    st.subheader("Charts")
+    st.caption("Detailed price and grid context for users who want to inspect the data behind the pulse and brief.")
+    st.plotly_chart(price_chart(rt_df, da_df), use_container_width=True)
+    left, right = st.columns(2)
+    left.plotly_chart(load_chart(load_df), use_container_width=True)
+    right.plotly_chart(renewable_chart(wind_df, solar_df), use_container_width=True)
 
-with tab_grid:
+with tab_signals:
+    st.subheader("Signal Detail")
+    st.caption("Explainability layer showing the rule-based grid and price signals used by the exposure cards.")
+    st.markdown("**Grid Signals**")
     for signal in grid_signals:
-        st.markdown(f"**{display_label(signal.get('signal_name', 'Grid signal'))}**")
-        st.write(f"Direction: {display_label(signal.get('direction', 'insufficient data'))}")
-        if signal.get("magnitude") is not None:
-            st.write(f"Magnitude: {percent(signal.get('magnitude'))}")
-        st.write(f"Confidence: {signal.get('confidence', 'Low')}")
-        st.caption(signal_evidence_text(signal))
-
-with tab_price:
+        with st.container(border=True):
+            st.markdown(f"**{display_label(signal.get('signal_name', 'Grid signal'))}**")
+            st.write(f"Direction: {display_label(signal.get('direction', 'insufficient data'))}")
+            if signal.get("magnitude") is not None:
+                st.write(f"Magnitude: {percent(signal.get('magnitude'))}")
+            st.write(f"Confidence: {signal.get('confidence', 'Low')}")
+            st.caption(signal_evidence_text(signal))
+    st.markdown("**Price Signals**")
     for signal in price_signals:
-        st.markdown(f"**{display_label(signal.get('price_signal', 'Price signal'))}**")
-        st.write(f"Current Real-Time Price: {money(signal.get('current_price'))}")
-        st.write(f"Rolling Baseline Price: {money(signal.get('baseline_price'))}")
-        st.write(f"Day-Ahead Price: {money(signal.get('day_ahead_price'))}")
-        st.write(f"RT vs DA Spread: {money(signal.get('rt_da_spread'))}")
-        if signal.get("price_change") is not None:
-            st.write(f"Price Change: {percent(signal.get('price_change'))}")
-        st.write(f"Confidence: {signal.get('confidence', 'Low')}")
-        st.caption(signal_evidence_text(signal))
-
-with tab_exposure:
-    st.markdown(f"**Exposure:** {display_sentence(exposure.get('exposure'))}")
-    st.markdown("**Data-Grounded Checks**")
-    render_list(exposure.get("possible_actions", []))
-    st.markdown("**Linked Signals**")
-    render_list([display_label(signal) for signal in exposure.get("linked_signals", [])], "No material linked signals.")
-    st.caption(DISCLAIMER)
+        with st.container(border=True):
+            st.markdown(f"**{display_label(signal.get('price_signal', 'Price signal'))}**")
+            st.write(f"Current Real-Time Price: {money(signal.get('current_price'))}")
+            st.write(f"Rolling Baseline Price: {money(signal.get('baseline_price'))}")
+            st.write(f"Day-Ahead Price: {money(signal.get('day_ahead_price'))}")
+            st.write(f"RT vs DA Spread: {money(signal.get('rt_da_spread'))}")
+            if signal.get("price_change") is not None:
+                st.write(f"Price Change: {percent(signal.get('price_change'))}")
+            st.write(f"Confidence: {signal.get('confidence', 'Low')}")
+            st.caption(signal_evidence_text(signal))
+    st.markdown("**Evidence Table**")
+    st.dataframe(evidence, use_container_width=True)
 
 with tab_raw:
+    st.caption("Raw structured outputs for debugging, validation, and demo transparency.")
+    with st.expander("Raw market pulse"):
+        st.json(market_pulse)
+    with st.expander("Raw persona exposure cards"):
+        st.json(persona_cards)
+    with st.expander("Raw agent brief"):
+        st.json(agent_brief)
     with st.expander("Raw grid signals"):
         st.json(grid_signals)
     with st.expander("Raw price signals"):
         st.json(price_signals)
     with st.expander("Raw reasoning output"):
         st.json(reasoning)
-    with st.expander("Raw exposure output"):
-        st.json(exposure)
-
-st.subheader("Evidence Table")
-st.dataframe(evidence, use_container_width=True)
 
 st.subheader("Export")
-brief = markdown_briefing(settlement_point, hours, persona, grid_signals, price_signals, reasoning, exposure, evidence)
+brief = markdown_briefing(settlement_point, hours, market_pulse, persona_cards, agent_brief, grid_signals, price_signals, reasoning, evidence)
 saved_path = save_briefing(brief)
 st.download_button("Export briefing as markdown", brief, file_name=saved_path.name, mime="text/markdown")
 st.caption(f"Saved latest briefing to `{saved_path}`")

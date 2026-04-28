@@ -1,6 +1,6 @@
 # ERCOT Grid-to-Price Intelligence Agent
 
-A Streamlit app that connects ERCOT physical grid conditions to real-time and day-ahead price movement, then produces an evidence-backed market briefing for an industrial consumer, generator / asset owner, or market observer.
+A Streamlit app that connects ERCOT physical grid conditions to real-time and day-ahead price movement, then produces an evidence-backed market briefing and persona-specific exposure readout.
 
 This is not a trading bot and does not provide financial or trading advice. Human review is required.
 
@@ -51,6 +51,16 @@ Run tests:
 pytest
 ```
 
+## Intelligence Agent MVP
+
+The app now opens with three agent-oriented tabs before the detailed charts and raw data:
+
+- **Market Pulse**: latest real-time price, day-ahead price when available, RT minus DA spread, latest load forecast, wind and solar contribution, renewable share of load, and a Low / Medium / High risk label.
+- **Persona Exposure**: deterministic exposure cards for data center operators, industrial energy buyers, power traders, retail electricity providers, renewable operators, and battery/storage operators.
+- **Agent Brief**: executive-style summary with current market risk, recent changes, main drivers, most exposed personas, next 6-hour watch items, recommended actions, assumptions, and confidence.
+
+The scoring is rule-based and does not require an LLM. If data is missing, the app reports `insufficient data` and still renders the persona cards using available signals. No fake market data is used.
+
 ## Refresh Policy
 
 V1 refreshes data hourly using Streamlit caching with a 60-minute TTL. The sidebar includes a `Refresh now` button that clears the cache and pulls fresh ERCOT data. The last successful pull metadata is stored in `data/cache/`.
@@ -76,9 +86,21 @@ The app runs a deterministic four-step workflow:
 1. Grid Signal Agent detects load, wind, solar, and possible supply tightening signals.
 2. Price Impact Agent detects real-time price spikes, drops, volatility, negative prices, and real-time versus day-ahead spreads.
 3. Reasoning Agent connects observed grid signals to observed price signals with confidence scoring.
-4. Exposure & Action Agent translates signals into non-prescriptive persona-specific considerations.
+4. Persona Exposure Agent turns the market pulse and signals into explainable exposure cards and an executive brief.
 
 All recommendations are linked to detected signals. Missing data is reported as `insufficient data`.
+
+## Scoring Notes
+
+Market risk is based on transparent heuristics:
+
+- elevated real-time prices add risk,
+- large positive RT-minus-DA spreads add risk,
+- negative prices add renewable/storage-specific exposure,
+- detected real-time volatility adds risk,
+- demand spikes, renewable generation drops, and possible supply tightening add physical-grid context.
+
+Persona exposure adjusts that market risk by economic sensitivity. Load-heavy personas are more exposed to high prices and premiums, traders and storage are more exposed to spreads and volatility, renewable operators are more exposed to negative prices, curtailment, and discounted pricing.
 
 ## Limitations
 
